@@ -2,6 +2,9 @@
 """
 Lake Erie Clothing Company - Google Merchant Center Feed Generator
 Pulls products from Wix Catalog V3 API and generates a Google-compliant TSV feed.
+
+Collection membership is determined by querying each collection directly
+using the filter on collectionId in the products query.
 """
 
 import os
@@ -26,7 +29,8 @@ HEADERS = {
     "Content-Type":   "application/json",
 }
 
-# ── Collection → gender/age_group mapping ───────────────────────────────────
+# ── Collection names → gender/age_group mapping ──────────────────────────────
+# Keys must match Wix collection names exactly (case-insensitive comparison used below)
 COLLECTION_GENDER_MAP = {
     "womens clothing": ("female", "adult"),
     "unisex clothing": ("unisex", "adult"),
@@ -40,86 +44,88 @@ with open("category_map.json") as f:
 
 # ── Wix API helpers ──────────────────────────────────────────────────────────
 
-def get_all_collections():
-    """Return dict of collection_id -> normalized_name using stores-reader V1 API."""
-    url = "https://www.wixapis.com/stores-reader/v1/collections/query"
-    collections = {}
-    offset = 0
-    while True:
-        body = {"query": {"paging": {"limit": 100, "offset": offset}}}
-        r = requests.post(url, headers=HEADERS, json=body)
+def get_collections():
+    """
+    Query collections using the stores/v1 endpoint with minimal body.
+    Returns dict of collection_id -> normalized_name.
+    """
+    # Try the V1 endpoint with the exact format from Wix curl examples
+    url = "https://www.wixapis.com/stores/v1/collections/query"
+    body = {
+        "query": {},
+        "includeNumberOfProducts": False,
+        "includeDescription": False
+    }
+    print(f"  Calling: POST {url}")
+    r = requests.post(url, headers=HEADERS, json=body)
+    print(f"  Collections API status: {r.status_code}")
+    if not r.ok:
+        print(f"  Collections API error: {r.text[:500]}")
         r.raise_for_status()
-        data = r.json()
-        batch = data.get("collections", [])
-        for c in batch:
-            collections[c["id"]] = c.get("name", "").strip().lower()
-        if len(batch) < 100:
-            break
-        offset += 100
+    data = r.json()
+    collections = {}
+    for c in data.get("collections", []):
+        collections[c["id"]] = c.get("name", "").strip().lower()
+    print(f"  Raw collections response keys: {list(data.keys())}")
     return collections
 
 
-def get_all_products():
-    """Return list of all products using V3 catalog API with cursor pagination."""
+def query_products_by_collection(collection_id):
+    """Query all products in a specific collection using V3 products API."""
     url = "https://www.wixapis.com/stores/v3/products/query"
     products = []
-    cursor = None
+    offset = 0
     while True:
-        body = {"query": {"paging": {"limit": 100, "offset": 0} if not cursor else {}}}
-        if cursor:
-            body = {"query": {"cursorPaging": {"limit": 100, "cursor": cursor}}}
-        else:
-            body = {"query": {"paging": {"limit": 100, "offset": len(products)}}}
+        body = {
+            "query": {
+                "filter": {"collections.id": {"$hasSome": [collection_id]}},
+                "paging": {"limit": 100, "offset": offset}
+            }
+        }
         r = requests.post(url, headers=HEADERS, json=body)
         r.raise_for_status()
         data = r.json()
         batch = data.get("products", [])
         products.extend(batch)
-        # Try cursor-based pagination first, fall back to offset
-        metadata = data.get("metadata", {})
-        cursor = metadata.get("cursors", {}).get("next")
-        if not cursor and len(batch) < 100:
+        if len(batch) < 100:
             break
-        if not cursor:
-            # offset-based fallback — just fetched a full page, loop will increment offset
-            pass
-    print(f"  Fetched {len(products)} products from Wix")
+        offset += 100
     return products
 
 
-def get_collections_for_products(product_ids):
+def get_all_products_with_collections():
     """
-    Fetch collection memberships for all products via stores V1.
-    Returns dict of product_id -> [collection_id, ...]
+    For each target collection, fetch its products.
+    Returns list of (product, collection_name) tuples.
     """
-    url = "https://www.wixapis.com/stores/v1/products/collections"
-    result = {pid: [] for pid in product_ids}
-    for i in range(0, len(product_ids), 100):
-        batch = product_ids[i:i+100]
-        body = {"productIds": batch}
-        try:
-            r = requests.post(url, headers=HEADERS, json=body)
-            r.raise_for_status()
-            for entry in r.json().get("productCollections", []):
-                pid = entry.get("productId")
-                cid = entry.get("collectionId")
-                if pid in result and cid:
-                    result[pid].append(cid)
-        except Exception as e:
-            print(f"  Warning: could not fetch collections for batch: {e}")
-            # Try alternative: get collections per product
-            for pid in batch:
-                try:
-                    r2 = requests.get(
-                        f"https://www.wixapis.com/stores/v1/products/{pid}/collections",
-                        headers=HEADERS
-                    )
-                    if r2.ok:
-                        for c in r2.json().get("collections", []):
-                            result[pid].append(c["id"])
-                except Exception:
-                    pass
-    return result
+    print("  Fetching collections...")
+    collections = get_collections()
+    print(f"  Found {len(collections)} total collections")
+    for cid, cname in collections.items():
+        print(f"    '{cname}' -> {cid}")
+
+    results = []
+    seen_ids = set()
+
+    for cid, cname in collections.items():
+        matched_target = None
+        for target in COLLECTION_GENDER_MAP:
+            if target in cname:
+                matched_target = target
+                break
+        if not matched_target:
+            continue
+
+        print(f"  Fetching products for collection '{cname}'...")
+        products = query_products_by_collection(cid)
+        print(f"    Found {len(products)} products")
+        for p in products:
+            pid = p["id"]
+            if pid not in seen_ids:
+                seen_ids.add(pid)
+                results.append((p, matched_target))
+
+    return results
 
 
 # ── Category helpers ─────────────────────────────────────────────────────────
@@ -130,17 +136,16 @@ def get_google_category(collection_name, product_name):
     if collection_name in ("womens clothing", "unisex clothing"):
         for kw, subcat in CAT_MAP["clothing_subcategory_keywords"].items():
             if kw in title_lower:
-                return subcat, CAT_MAP["clothing_category_id"]
-        return CAT_MAP["clothing_category"], CAT_MAP["clothing_category_id"]
+                return subcat
+        return CAT_MAP["clothing_category"]
 
     if collection_name == "lake living":
         for kw, info in CAT_MAP["lake_living_keywords"].items():
             if kw in title_lower:
-                return info["category"], info["id"]
-        default = CAT_MAP["default_lake_living"]
-        return default["category"], default["id"]
+                return info["category"]
+        return CAT_MAP["default_lake_living"]["category"]
 
-    return CAT_MAP["clothing_category"], CAT_MAP["clothing_category_id"]
+    return CAT_MAP["clothing_category"]
 
 
 # ── Feed row builder ──────────────────────────────────────────────────────────
@@ -165,6 +170,22 @@ def format_price(amount, currency="USD"):
         return ""
 
 
+def get_price(product):
+    """Extract price from whichever field the API version uses."""
+    for path in [
+        lambda p: (p["price"]["price"], p["price"].get("currency", "USD")),
+        lambda p: (p["priceData"]["price"], p["priceData"].get("currency", "USD")),
+        lambda p: (p["actualPriceRange"]["minValue"]["amount"], p["actualPriceRange"]["minValue"].get("currency", "USD")),
+    ]:
+        try:
+            amount, currency = path(product)
+            if amount:
+                return format_price(amount, currency)
+        except (KeyError, TypeError):
+            pass
+    return "0.00 USD"
+
+
 def build_rows(product, collection_name):
     rows = []
     pid   = product.get("id", "")
@@ -181,43 +202,29 @@ def build_rows(product, collection_name):
     if main_media.get("image"):
         main_image = main_media["image"].get("url", "")
     for item in media.get("items", []):
-        url = item.get("image", {}).get("url", "")
-        if url and url != main_image:
-            additional_images.append(url)
+        img_url = item.get("image", {}).get("url", "")
+        if img_url and img_url != main_image:
+            additional_images.append(img_url)
 
     gender, age_group = COLLECTION_GENDER_MAP.get(collection_name, (None, None))
-    google_cat, _ = get_google_category(collection_name, title)
+    google_cat = get_google_category(collection_name, title)
 
-    # Availability & base price
-    inventory = product.get("stock", product.get("inventory", {}))
+    # Availability
+    stock = product.get("stock", product.get("inventory", {}))
     in_stock = (
-        inventory.get("inStock", True) or
-        inventory.get("availabilityStatus", "IN_STOCK") == "IN_STOCK"
+        stock.get("inStock", None) is True or
+        stock.get("availabilityStatus", "IN_STOCK") == "IN_STOCK"
     )
     availability = "in stock" if in_stock else "out of stock"
-
-    # Price — try multiple field paths used across API versions
-    price_val = (
-        product.get("price", {}).get("price") or
-        product.get("priceData", {}).get("price") or
-        product.get("actualPriceRange", {}).get("minValue", {}).get("amount") or
-        "0.00"
-    )
-    currency = (
-        product.get("price", {}).get("currency") or
-        product.get("priceData", {}).get("currency") or
-        product.get("actualPriceRange", {}).get("minValue", {}).get("currency") or
-        "USD"
-    )
-    base_price = format_price(price_val, currency)
+    base_price = get_price(product)
 
     variants = product.get("variants", [])
 
     if not variants:
-        row = _make_row(pid, title, description, product_url, main_image,
-                        additional_images, base_price, availability,
-                        gender, age_group, google_cat, "", "", "")
-        rows.append(row)
+        rows.append(_make_row(
+            pid, title, description, product_url, main_image, additional_images,
+            base_price, availability, gender, age_group, google_cat, "", "", ""
+        ))
     else:
         for i, variant in enumerate(variants):
             color = extract_option_value(variant, "color")
@@ -226,17 +233,17 @@ def build_rows(product, collection_name):
 
             v_price = format_price(
                 variant.get("price", {}).get("price", 0),
-                variant.get("price", {}).get("currency", currency)
+                variant.get("price", {}).get("currency", "USD")
             ) or base_price
 
-            v_stock = variant.get("stock", {})
-            v_available = "out of stock" if not v_stock.get("inStock", True) else availability
+            v_in_stock = variant.get("stock", {}).get("inStock", True)
+            v_available = "in stock" if v_in_stock else "out of stock"
 
             item_group = pid if len(variants) > 1 else ""
-            row = _make_row(variant_id, title, description, product_url, main_image,
-                            additional_images, v_price, v_available,
-                            gender, age_group, google_cat, color, size, item_group)
-            rows.append(row)
+            rows.append(_make_row(
+                variant_id, title, description, product_url, main_image, additional_images,
+                v_price, v_available, gender, age_group, google_cat, color, size, item_group
+            ))
 
     return rows
 
@@ -269,54 +276,17 @@ def _make_row(item_id, title, description, link, image_link, additional_images,
 def main():
     print(f"[{datetime.utcnow().isoformat()}] Starting Google Merchant Center feed generation...")
 
-    print("  Fetching collections...")
-    all_collections = get_all_collections()
-    print(f"  Found {len(all_collections)} collections:")
-    for cid, cname in all_collections.items():
-        print(f"    - '{cname}' ({cid})")
-
-    # Map collection_id -> target name
-    target_collection_ids = {}
-    for cid, cname in all_collections.items():
-        for target in COLLECTION_GENDER_MAP:
-            if target in cname:
-                target_collection_ids[cid] = target
-                break
-
-    print(f"  Matched target collections: {list(set(target_collection_ids.values()))}")
-
-    print("  Fetching products...")
-    products = get_all_products()
-
-    print("  Fetching product-collection memberships...")
-    product_ids = [p["id"] for p in products]
-    product_collection_map = get_collections_for_products(product_ids)
+    product_collection_pairs = get_all_products_with_collections()
 
     all_rows = []
-    skipped = 0
-
-    for product in products:
-        pid = product["id"]
-        product_col_ids = product_collection_map.get(pid, [])
-
-        collection_name = None
-        for cid in product_col_ids:
-            if cid in target_collection_ids:
-                collection_name = target_collection_ids[cid]
-                break
-
-        if collection_name is None:
-            skipped += 1
-            print(f"  Skipping (no target collection): {product.get('name')}")
-            continue
-
+    for product, collection_name in product_collection_pairs:
         rows = build_rows(product, collection_name)
         all_rows.extend(rows)
 
-    print(f"  Generated {len(all_rows)} rows from {len(products) - skipped} products ({skipped} skipped)")
+    print(f"  Total feed rows: {len(all_rows)} from {len(product_collection_pairs)} products")
 
     if not all_rows:
-        print("  WARNING: No rows generated. Check that Wix collection names match exactly.")
+        print("  WARNING: No rows generated.")
         return
 
     fieldnames = [
