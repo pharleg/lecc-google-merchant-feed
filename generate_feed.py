@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Lake Erie Clothing Company - Google Merchant Center Feed Generator
-Supports both Wix Catalog V3 (Categories API) and V1 (Collections API).
+Uses hardcoded Wix category IDs to avoid collections API auth issues.
 """
 
 import os
@@ -26,11 +26,11 @@ HEADERS = {
     "Content-Type":   "application/json",
 }
 
-# ── Collection/Category names → gender/age_group mapping ────────────────────
-COLLECTION_GENDER_MAP = {
-    "womens clothing": ("female", "adult"),
-    "unisex clothing": ("unisex", "adult"),
-    "lake living":     (None,      None),
+# ── Hardcoded category IDs (from Wix dashboard URLs) ────────────────────────
+CATEGORIES = {
+    "b377b9de-cce7-41e2-bb5d-c6267b77ac77": ("womens clothing", "female", "adult"),
+    "5e5794a2-f163-4aef-8735-12adcf30f43d": ("unisex clothing", "unisex", "adult"),
+    "826bd629-379e-46b0-b579-03d70c511ba0": ("lake living",     None,     None),
 }
 
 # ── Load category map ────────────────────────────────────────────────────────
@@ -40,119 +40,29 @@ with open("category_map.json") as f:
 
 # ── Wix API helpers ──────────────────────────────────────────────────────────
 
-def get_catalog_version():
-    """Check if this site uses Catalog V3."""
-    url = "https://www.wixapis.com/stores/v3/provision/version"
-    try:
-        r = requests.get(url, headers=HEADERS)
-        if r.ok:
-            version = r.json().get("version", "V1")
-            print(f"  Catalog version: {version}")
-            return version
-    except Exception as e:
-        print(f"  Could not determine catalog version: {e}")
-    return "V1"
-
-
-def get_categories_v3():
-    """Fetch store categories using the V3 Categories API."""
-    url = "https://www.wixapis.com/categories/v1/categories"
-    categories = {}
-    cursor = None
-    while True:
-        body = {"paging": {"limit": 100}}
-        if cursor:
-            body["paging"]["cursor"] = cursor
-        r = requests.post(url + "/query", headers=HEADERS, json=body)
-        print(f"  Categories V3 API status: {r.status_code}")
-        if not r.ok:
-            print(f"  Categories V3 error: {r.text[:300]}")
-            break
-        data = r.json()
-        for c in data.get("categories", []):
-            categories[c["id"]] = c.get("name", "").strip().lower()
-        cursor = data.get("pagingMetadata", {}).get("cursors", {}).get("next")
-        if not cursor:
-            break
-    return categories
-
-
-def get_collections_v1():
-    """Fetch store collections using V1 Collections API with site ID in URL."""
-    # Try with site ID embedded in path — some Wix endpoints require this
-    urls_to_try = [
-        f"https://www.wixapis.com/stores/v1/collections/query",
-        f"https://www.wixapis.com/stores/v2/collections/query",
-    ]
-    for url in urls_to_try:
-        body = {"query": {}, "includeNumberOfProducts": False}
-        print(f"  Trying: POST {url}")
-        r = requests.post(url, headers=HEADERS, json=body)
-        print(f"  Status: {r.status_code}")
-        if r.ok:
-            data = r.json()
-            collections = {}
-            for c in data.get("collections", []):
-                collections[c["id"]] = c.get("name", "").strip().lower()
-            return collections
-        print(f"  Error: {r.text[:200]}")
-    return {}
-
-
-def get_all_categories():
-    """Try V3 categories first, fall back to V1 collections."""
-    print("  Trying V3 Categories API...")
-    cats = get_categories_v3()
-    if cats:
-        print(f"  Found {len(cats)} categories via V3 API")
-        return cats, "v3"
-
-    print("  Trying V1 Collections API...")
-    cols = get_collections_v1()
-    if cols:
-        print(f"  Found {len(cols)} collections via V1 API")
-        return cols, "v1"
-
-    print("  WARNING: Could not fetch any categories/collections!")
-    return {}, "unknown"
-
-
-def get_all_products():
-    """Fetch all products from V3 products API."""
+def get_products_for_category(category_id):
+    """Fetch all products in a category using V3 products API."""
     url = "https://www.wixapis.com/stores/v3/products/query"
     products = []
     offset = 0
     while True:
         body = {
-            "fields": ["ALL_CATEGORIES_INFO"],
-            "query": {"paging": {"limit": 100, "offset": offset}}
+            "query": {
+                "filter": {"categoryIds": {"$hasSome": [category_id]}},
+                "paging": {"limit": 100, "offset": offset}
+            }
         }
         r = requests.post(url, headers=HEADERS, json=body)
-        r.raise_for_status()
+        if not r.ok:
+            print(f"  Products API error {r.status_code}: {r.text[:300]}")
+            r.raise_for_status()
         data = r.json()
         batch = data.get("products", [])
         products.extend(batch)
         if len(batch) < 100:
             break
         offset += 100
-    print(f"  Fetched {len(products)} products")
     return products
-
-
-def get_product_category_ids(product):
-    """Extract category/collection IDs from a product across API versions."""
-    ids = set()
-    # V3 categories
-    for cat in product.get("allCategories", product.get("categories", [])):
-        cid = cat.get("id") or cat.get("categoryId")
-        if cid:
-            ids.add(cid)
-    # V1 collections embedded in product
-    for col in product.get("collections", []):
-        cid = col.get("id") or col.get("collectionId")
-        if cid:
-            ids.add(cid)
-    return ids
 
 
 # ── Category helpers ─────────────────────────────────────────────────────────
@@ -208,7 +118,7 @@ def get_price(product):
     return "0.00 USD"
 
 
-def build_rows(product, collection_name):
+def build_rows(product, collection_name, gender, age_group):
     rows = []
     pid   = product.get("id", "")
     title = product.get("name", "").strip()
@@ -226,11 +136,10 @@ def build_rows(product, collection_name):
         if img_url and img_url != main_image:
             additional_images.append(img_url)
 
-    gender, age_group = COLLECTION_GENDER_MAP.get(collection_name, (None, None))
     google_cat = get_google_category(collection_name, title)
 
     stock = product.get("stock", product.get("inventory", {}))
-    in_stock = stock.get("inStock", True) or stock.get("availabilityStatus", "IN_STOCK") == "IN_STOCK"
+    in_stock = stock.get("inStock", True)
     availability = "in stock" if in_stock else "out of stock"
     base_price = get_price(product)
 
@@ -275,52 +184,32 @@ def _make_row(item_id, title, description, link, image_link, additional_images,
 def main():
     print(f"[{datetime.utcnow().isoformat()}] Starting Google Merchant Center feed generation...")
 
-    all_cats, api_version = get_all_categories()
-    print(f"  Categories/Collections found ({api_version}):")
-    for cid, cname in all_cats.items():
-        print(f"    '{cname}' -> {cid}")
-
-    # Map category_id -> target collection name
-    target_cat_ids = {}
-    for cid, cname in all_cats.items():
-        for target in COLLECTION_GENDER_MAP:
-            if target in cname:
-                target_cat_ids[cid] = target
-                break
-
-    print(f"  Matched: {list(set(target_cat_ids.values()))}")
-
-    print("  Fetching products...")
-    products = get_all_products()
-
-    # Log first product structure to help debug category field names
-    if products:
-        p = products[0]
-        print(f"  Sample product keys: {list(p.keys())}")
-        if "allCategories" in p:
-            print(f"  Sample allCategories: {p['allCategories'][:2]}")
-        if "categories" in p:
-            print(f"  Sample categories: {p['categories'][:2]}")
-
     all_rows = []
-    skipped = 0
+    seen_ids = set()
+    total_products = 0
 
-    for product in products:
-        cat_ids = get_product_category_ids(product)
-        collection_name = None
-        for cid in cat_ids:
-            if cid in target_cat_ids:
-                collection_name = target_cat_ids[cid]
-                break
-
-        if collection_name is None:
-            skipped += 1
-            print(f"  Skipping: {product.get('name')} (cat_ids: {cat_ids})")
+    for cat_id, (collection_name, gender, age_group) in CATEGORIES.items():
+        print(f"  Fetching products for '{collection_name}' ({cat_id})...")
+        try:
+            products = get_products_for_category(cat_id)
+        except Exception as e:
+            print(f"  ERROR fetching category {cat_id}: {e}")
             continue
 
-        all_rows.extend(build_rows(product, collection_name))
+        print(f"    Found {len(products)} products")
+        if products:
+            print(f"    Sample product keys: {list(products[0].keys())}")
 
-    print(f"  Generated {len(all_rows)} rows ({skipped} products skipped)")
+        for product in products:
+            pid = product["id"]
+            if pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+            total_products += 1
+            rows = build_rows(product, collection_name, gender, age_group)
+            all_rows.extend(rows)
+
+    print(f"  Total: {len(all_rows)} feed rows from {total_products} products")
 
     if not all_rows:
         print("  WARNING: No rows generated.")
