@@ -8,7 +8,7 @@ import csv
 import json
 import requests
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ── Config ──────────────────────────────────────────────────────────────────
 API_KEY     = os.environ["WIX_API_KEY"]
@@ -17,6 +17,7 @@ ACCOUNT_ID  = os.environ["WIX_ACCOUNT_ID"]
 STORE_URL   = "https://www.lakeerieclothing.com"
 BRAND       = "Lake Erie Clothing Company"
 OUTPUT_FILE = "google_feed.tsv"
+EXPIRATION_DATE = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d")
 
 HEADERS = {
     "Authorization":  API_KEY,
@@ -56,9 +57,7 @@ def get_product_ids_for_category(category_id):
             print(f"  Category items API error {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
         data = r.json()
-        print(f"    Raw response: {json.dumps(data)[:1000]}")
-        print(f"    Category API response keys: {list(data.keys())}")
-        items = data.get("items", data.get("categoryItems", []))
+        items = data.get("items", [])
         for item in items:
             pid = item.get("catalogItemId") or item.get("itemId") or item.get("id")
             if pid:
@@ -74,7 +73,6 @@ def get_products_by_ids(product_ids):
     """Fetch products by ID list using V3 query."""
     url = "https://www.wixapis.com/stores/v3/products/query"
     products = []
-    # Query in batches of 100
     for i in range(0, len(product_ids), 100):
         batch = product_ids[i:i+100]
         body = {
@@ -181,7 +179,6 @@ def build_rows(product, detail, collection_name, gender, age_group):
     availability = "in stock" if in_stock else "out of stock"
     base_price = get_price(product)
 
-    # Variants come from detail.variantsInfo.variants
     options = detail.get("options", []) if detail else []
     variants = []
     if detail:
@@ -199,7 +196,6 @@ def build_rows(product, detail, collection_name, gender, age_group):
                 opt_id    = ids.get("optionId", "")
                 choice_id = ids.get("choiceId", "")
                 name = get_choice_name(options, opt_id, choice_id)
-                # Figure out if this is color or size by option name
                 for option in options:
                     if option.get("id") == opt_id:
                         opt_name = option.get("name", "").lower()
@@ -214,7 +210,6 @@ def build_rows(product, detail, collection_name, gender, age_group):
             v_in_stock = variant.get("inventoryStatus", {}).get("inStock", True)
             v_available = "in stock" if v_in_stock else "out of stock"
             item_group = pid if len(variants) > 1 else ""
-            # Use variant image if available, else product main image
             v_image = variant.get("media", {}).get("image", {}).get("url", "") or main_image
             rows.append(_make_row(variant_id, title, description, product_url, v_image,
                                   additional_images, v_price, v_available,
@@ -233,6 +228,7 @@ def _make_row(item_id, title, description, link, image_link, additional_images,
         "condition": "new", "google_product_category": google_product_category,
         "item_group_id": item_group_id, "color": color, "size": size,
         "gender": gender or "", "age_group": age_group or "",
+        "expiration_date": EXPIRATION_DATE,
     }
 
 
@@ -277,7 +273,7 @@ def main():
 
     fieldnames = ["id", "title", "description", "link", "image_link", "additional_image_link",
                   "availability", "price", "brand", "condition", "google_product_category",
-                  "item_group_id", "color", "size", "gender", "age_group"]
+                  "item_group_id", "color", "size", "gender", "age_group", "expiration_date"]
 
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
