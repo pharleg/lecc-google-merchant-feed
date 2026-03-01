@@ -60,7 +60,7 @@ def get_product_ids_for_category(category_id):
         print(f"    Category API response keys: {list(data.keys())}")
         items = data.get("items", data.get("categoryItems", []))
         for item in items:
-            pid = item.get("itemId") or item.get("id") or item.get("productId")
+            pid = item.get("catalogItemId") or item.get("itemId") or item.get("id")
             if pid:
                 product_ids.append(pid)
         next_cursor = data.get("pagingMetadata", {}).get("cursors", {}).get("next")
