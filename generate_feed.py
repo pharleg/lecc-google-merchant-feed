@@ -39,32 +39,59 @@ with open("category_map.json") as f:
 
 # ── Wix API helpers ──────────────────────────────────────────────────────────
 
-def get_all_products():
-    """Fetch all products - same approach as working Meta feed."""
-    url = "https://www.wixapis.com/stores/v3/products/query"
-    products = []
-    offset = 0
+def get_product_ids_for_category(category_id):
+    """Get product IDs belonging to a category via Categories API."""
+    url = f"https://www.wixapis.com/categories/v1/categories/{category_id}/list-items"
+    product_ids = []
+    cursor = None
     while True:
         body = {
+            "treeReference": {"appNamespace": "@wix/stores"},
+            "paging": {"limit": 100}
+        }
+        if cursor:
+            body["paging"]["cursor"] = cursor
+        r = requests.post(url, headers=HEADERS, json=body)
+        if not r.ok:
+            print(f"  Category items API error {r.status_code}: {r.text[:300]}")
+            r.raise_for_status()
+        data = r.json()
+        print(f"    Category API response keys: {list(data.keys())}")
+        items = data.get("items", data.get("categoryItems", []))
+        for item in items:
+            pid = item.get("itemId") or item.get("id") or item.get("productId")
+            if pid:
+                product_ids.append(pid)
+        next_cursor = data.get("pagingMetadata", {}).get("cursors", {}).get("next")
+        if not next_cursor or len(items) < 100:
+            break
+        cursor = next_cursor
+    return product_ids
+
+
+def get_products_by_ids(product_ids):
+    """Fetch products by ID list using V3 query."""
+    url = "https://www.wixapis.com/stores/v3/products/query"
+    products = []
+    # Query in batches of 100
+    for i in range(0, len(product_ids), 100):
+        batch = product_ids[i:i+100]
+        body = {
             "query": {
-                "paging": {"limit": 100, "offset": offset}
+                "filter": {"id": {"$in": batch}},
+                "paging": {"limit": 100}
             }
         }
         r = requests.post(url, headers=HEADERS, json=body)
         if not r.ok:
             print(f"  Products API error {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
-        data = r.json()
-        batch = data.get("products", [])
-        products.extend(batch)
-        if len(batch) < 100:
-            break
-        offset += 100
+        products.extend(r.json().get("products", []))
     return products
 
 
 def get_product_detail(product_id):
-    """Fetch full product detail including variants."""
+    """Fetch full product detail including variantsInfo."""
     url = f"https://www.wixapis.com/stores/v3/products/{product_id}"
     r = requests.get(url, headers=HEADERS)
     if not r.ok:
@@ -92,10 +119,13 @@ def get_google_category(collection_name, product_name):
 
 # ── Feed row builder ──────────────────────────────────────────────────────────
 
-def extract_option_value(variant, option_name):
-    for choice in variant.get("choices", []):
-        if choice.get("optionName", "").lower() == option_name.lower():
-            return choice.get("description", "").strip()
+def get_choice_name(options, option_id, choice_id):
+    """Resolve option/choice IDs to human-readable names."""
+    for option in options:
+        if option.get("id") == option_id:
+            for choice in option.get("choicesSettings", {}).get("choices", []):
+                if choice.get("choiceId") == choice_id:
+                    return choice.get("name", "").strip()
     return ""
 
 
@@ -113,9 +143,9 @@ def format_price(amount, currency="USD"):
 
 def get_price(product):
     for path in [
+        lambda p: (p["actualPriceRange"]["minValue"]["amount"], "USD"),
         lambda p: (p["priceData"]["price"], p["priceData"].get("currency", "USD")),
         lambda p: (p["price"]["price"], p["price"].get("currency", "USD")),
-        lambda p: (p["actualPriceRange"]["minValue"]["amount"], p["actualPriceRange"]["minValue"].get("currency", "USD")),
     ]:
         try:
             amount, currency = path(product)
@@ -126,7 +156,7 @@ def get_price(product):
     return "0.00 USD"
 
 
-def build_rows(product, collection_name, gender, age_group):
+def build_rows(product, detail, collection_name, gender, age_group):
     rows = []
     pid   = product.get("id", "")
     title = product.get("name", "").strip()
@@ -145,28 +175,47 @@ def build_rows(product, collection_name, gender, age_group):
             additional_images.append(img_url)
 
     google_cat = get_google_category(collection_name, title)
-    stock = product.get("stock", {})
-    in_stock = stock.get("inStock", True)
+    inv = product.get("inventory", {})
+    in_stock = inv.get("availabilityStatus", "IN_STOCK") == "IN_STOCK"
     availability = "in stock" if in_stock else "out of stock"
     base_price = get_price(product)
 
-    variants = product.get("variants", [])
+    # Variants come from detail.variantsInfo.variants
+    options = detail.get("options", []) if detail else []
+    variants = []
+    if detail:
+        variants = detail.get("variantsInfo", {}).get("variants", [])
+
     if not variants:
         rows.append(_make_row(pid, title, description, product_url, main_image,
                               additional_images, base_price, availability,
                               gender, age_group, google_cat, "", "", ""))
     else:
         for i, variant in enumerate(variants):
-            color = extract_option_value(variant, "color")
-            size  = extract_option_value(variant, "size")
+            color, size = "", ""
+            for choice_ref in variant.get("choices", []):
+                ids = choice_ref.get("optionChoiceIds", {})
+                opt_id    = ids.get("optionId", "")
+                choice_id = ids.get("choiceId", "")
+                name = get_choice_name(options, opt_id, choice_id)
+                # Figure out if this is color or size by option name
+                for option in options:
+                    if option.get("id") == opt_id:
+                        opt_name = option.get("name", "").lower()
+                        if "color" in opt_name:
+                            color = name
+                        elif "size" in opt_name:
+                            size = name
             variant_id = f"{pid}_{i}"
             v_price = format_price(
-                variant.get("price", {}).get("price", 0),
-                variant.get("price", {}).get("currency", "USD")
+                variant.get("price", {}).get("actualPrice", {}).get("amount", 0)
             ) or base_price
-            v_available = "in stock" if variant.get("stock", {}).get("inStock", True) else "out of stock"
+            v_in_stock = variant.get("inventoryStatus", {}).get("inStock", True)
+            v_available = "in stock" if v_in_stock else "out of stock"
             item_group = pid if len(variants) > 1 else ""
-            rows.append(_make_row(variant_id, title, description, product_url, main_image,
+            # Use variant image if available, else product main image
+            v_image = variant.get("media", {}).get("image", {}).get("url", "") or main_image
+            rows.append(_make_row(variant_id, title, description, product_url, v_image,
                                   additional_images, v_price, v_available,
                                   gender, age_group, google_cat, color, size, item_group))
     return rows
@@ -176,104 +225,4 @@ def _make_row(item_id, title, description, link, image_link, additional_images,
               price, availability, gender, age_group, google_product_category,
               color, size, item_group_id):
     return {
-        "id": item_id, "title": title, "description": description,
-        "link": link, "image_link": image_link,
-        "additional_image_link": ",".join(additional_images[:10]),
-        "availability": availability, "price": price, "brand": BRAND,
-        "condition": "new", "google_product_category": google_product_category,
-        "item_group_id": item_group_id, "color": color, "size": size,
-        "gender": gender or "", "age_group": age_group or "",
-    }
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
-def main():
-    print(f"[{datetime.utcnow().isoformat()}] Starting Google Merchant Center feed generation...")
-
-    print("  Fetching all products...")
-    products = get_all_products()
-    print(f"  Got {len(products)} products")
-
-    # DEBUG: check what get product returns for first product
-    if products:
-        detail = get_product_detail(products[0]["id"])
-        if detail:
-            print(f"  Detail keys: {list(detail.keys())}")
-            print(f"  mainCategoryId: {detail.get('mainCategoryId')}")
-            print(f"  directCategoryIds: {detail.get('directCategoryIds')}")
-            print(f"  variantsInfo: {detail.get('variantsInfo')}")
-            # Print full detail to see everything
-            import json as j
-            print(f"  FULL DETAIL: {j.dumps(detail, indent=2)[:3000]}")
-        import sys; sys.exit(0)
-        
-    if products:
-        p = products[0]
-        print(f"  Sample product keys: {list(p.keys())}")
-        print(f"  Sample product name: {p.get('name')}")
-
-    all_rows = []
-    skipped = 0
-
-    for product in products:
-        # Check all possible category ID locations in the response
-        cat_ids = set()
-        for cid in product.get("directCategoryIds", []):
-            cat_ids.add(cid)
-        for cat in product.get("directCategories", []):
-            cat_ids.add(cat.get("id", ""))
-        for cat in product.get("categories", []):
-            cat_ids.add(cat.get("id", ""))
-
-        collection_name, gender, age_group = None, None, None
-        for cid in cat_ids:
-            if cid in CATEGORIES:
-                collection_name, gender, age_group = CATEGORIES[cid]
-                break
-
-        if collection_name is None:
-            # Fetch full product detail to get category info
-            detail = get_product_detail(product["id"])
-            if detail:
-                for cid in detail.get("directCategoryIds", []):
-                    cat_ids.add(cid)
-                for cat in detail.get("directCategories", []):
-                    cat_ids.add(cat.get("id", ""))
-                # Also grab variants from detail
-                product["variants"] = detail.get("variants", [])
-
-            for cid in cat_ids:
-                if cid in CATEGORIES:
-                    collection_name, gender, age_group = CATEGORIES[cid]
-                    break
-
-        if collection_name is None:
-            skipped += 1
-            print(f"  Skipping '{product.get('name')}' - cat_ids found: {cat_ids}")
-            continue
-
-        rows = build_rows(product, collection_name, gender, age_group)
-        all_rows.extend(rows)
-
-    print(f"  Total: {len(all_rows)} feed rows ({skipped} products skipped)")
-
-    if not all_rows:
-        print("  WARNING: No rows generated.")
-        return
-
-    fieldnames = ["id", "title", "description", "link", "image_link", "additional_image_link",
-                  "availability", "price", "brand", "condition", "google_product_category",
-                  "item_group_id", "color", "size", "gender", "age_group"]
-
-    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(all_rows)
-
-    print(f"  Written to {OUTPUT_FILE}")
-    print(f"[{datetime.utcnow().isoformat()}] Done.")
-
-
-if __name__ == "__main__":
-    main()
+        "id": item_id, "titl
