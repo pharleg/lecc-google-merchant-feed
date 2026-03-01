@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Lake Erie Clothing Company - Google Merchant Center Feed Generator
-Uses hardcoded Wix category IDs to avoid collections API auth issues.
 """
 
 import os
@@ -40,17 +39,15 @@ with open("category_map.json") as f:
 
 # ── Wix API helpers ──────────────────────────────────────────────────────────
 
-def get_products_for_category(category_id):
-    """Fetch all products in a category using V3 products API."""
+def get_all_products():
+    """Fetch all products with category IDs included."""
     url = "https://www.wixapis.com/stores/v3/products/query"
     products = []
     offset = 0
     while True:
         body = {
-            "query": {
-                "filter": {"categoryIds": {"$hasSome": [category_id]}},
-                "paging": {"limit": 100, "offset": offset}
-            }
+            "fields": ["DIRECT_CATEGORY_IDS", "DESCRIPTION"],
+            "query": {"paging": {"limit": 100, "offset": offset}}
         }
         r = requests.post(url, headers=HEADERS, json=body)
         if not r.ok:
@@ -63,6 +60,31 @@ def get_products_for_category(category_id):
             break
         offset += 100
     return products
+
+
+def get_product_variants(product_id):
+    """Fetch full product details including variants."""
+    url = f"https://www.wixapis.com/stores/v3/products/{product_id}"
+    r = requests.get(url, headers=HEADERS)
+    if not r.ok:
+        print(f"  Warning: could not fetch variants for {product_id}: {r.status_code}")
+        return []
+    data = r.json()
+    return data.get("product", {}).get("variants", [])
+
+
+def get_product_category_ids(product):
+    """Extract category IDs from a product."""
+    ids = set()
+    # V3 direct category IDs field
+    for cid in product.get("directCategoryIds", []):
+        ids.add(cid)
+    # Also check nested structures
+    for cat in product.get("directCategories", []):
+        cid = cat.get("id") or cat.get("categoryId")
+        if cid:
+            ids.add(cid)
+    return ids
 
 
 # ── Category helpers ─────────────────────────────────────────────────────────
@@ -105,8 +127,8 @@ def format_price(amount, currency="USD"):
 
 def get_price(product):
     for path in [
-        lambda p: (p["price"]["price"], p["price"].get("currency", "USD")),
         lambda p: (p["priceData"]["price"], p["priceData"].get("currency", "USD")),
+        lambda p: (p["price"]["price"], p["price"].get("currency", "USD")),
         lambda p: (p["actualPriceRange"]["minValue"]["amount"], p["actualPriceRange"]["minValue"].get("currency", "USD")),
     ]:
         try:
@@ -122,7 +144,7 @@ def build_rows(product, collection_name, gender, age_group):
     rows = []
     pid   = product.get("id", "")
     title = product.get("name", "").strip()
-    description = clean_description(product.get("description", title))
+    description = clean_description(product.get("description", "") or product.get("plainDescription", "") or title)
     slug  = product.get("slug", "")
     product_url = f"{STORE_URL}/product-page/{slug}"
 
@@ -138,12 +160,14 @@ def build_rows(product, collection_name, gender, age_group):
 
     google_cat = get_google_category(collection_name, title)
 
-    stock = product.get("stock", product.get("inventory", {}))
+    stock = product.get("stock", {})
     in_stock = stock.get("inStock", True)
     availability = "in stock" if in_stock else "out of stock"
     base_price = get_price(product)
 
-    variants = product.get("variants", [])
+    # Fetch variants separately (not returned by query endpoint)
+    variants = get_product_variants(pid)
+
     if not variants:
         rows.append(_make_row(pid, title, description, product_url, main_image,
                               additional_images, base_price, availability,
@@ -184,32 +208,36 @@ def _make_row(item_id, title, description, link, image_link, additional_images,
 def main():
     print(f"[{datetime.utcnow().isoformat()}] Starting Google Merchant Center feed generation...")
 
-    all_rows = []
-    seen_ids = set()
-    total_products = 0
+    print("  Fetching all products...")
+    products = get_all_products()
+    print(f"  Got {len(products)} products")
 
-    for cat_id, (collection_name, gender, age_group) in CATEGORIES.items():
-        print(f"  Fetching products for '{collection_name}' ({cat_id})...")
-        try:
-            products = get_products_for_category(cat_id)
-        except Exception as e:
-            print(f"  ERROR fetching category {cat_id}: {e}")
+    # Log first product to see what fields come back
+    if products:
+        p = products[0]
+        print(f"  Sample product keys: {list(p.keys())}")
+        print(f"  Sample directCategoryIds: {p.get('directCategoryIds', 'NOT FOUND')}")
+
+    all_rows = []
+    skipped = 0
+
+    for product in products:
+        cat_ids = get_product_category_ids(product)
+
+        collection_name, gender, age_group = None, None, None
+        for cid in cat_ids:
+            if cid in CATEGORIES:
+                collection_name, gender, age_group = CATEGORIES[cid]
+                break
+
+        if collection_name is None:
+            skipped += 1
             continue
 
-        print(f"    Found {len(products)} products")
-        if products:
-            print(f"    Sample product keys: {list(products[0].keys())}")
+        rows = build_rows(product, collection_name, gender, age_group)
+        all_rows.extend(rows)
 
-        for product in products:
-            pid = product["id"]
-            if pid in seen_ids:
-                continue
-            seen_ids.add(pid)
-            total_products += 1
-            rows = build_rows(product, collection_name, gender, age_group)
-            all_rows.extend(rows)
-
-    print(f"  Total: {len(all_rows)} feed rows from {total_products} products")
+    print(f"  Total: {len(all_rows)} feed rows ({skipped} products skipped - not in target categories)")
 
     if not all_rows:
         print("  WARNING: No rows generated.")
