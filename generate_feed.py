@@ -196,14 +196,17 @@ def main():
     print(f"  Got {len(products)} products")
 
     # DEBUG: check what get product returns for first product
-    if products:
+   if products:
         detail = get_product_detail(products[0]["id"])
         if detail:
             print(f"  Detail keys: {list(detail.keys())}")
             print(f"  mainCategoryId: {detail.get('mainCategoryId')}")
             print(f"  directCategoryIds: {detail.get('directCategoryIds')}")
-            print(f"  categories: {detail.get('categories', 'NOT FOUND')}")
-        import sys; sys.exit(0)  # stop after debug
+            print(f"  variantsInfo: {detail.get('variantsInfo')}")
+            # Print full detail to see everything
+            import json as j
+            print(f"  FULL DETAIL: {j.dumps(detail, indent=2)[:3000]}")
+        import sys; sys.exit(0)
         
     if products:
         p = products[0]
