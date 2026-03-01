@@ -41,8 +41,8 @@ with open("category_map.json") as f:
 # ── Wix API helpers ──────────────────────────────────────────────────────────
 
 def get_all_collections():
-    """Return dict of collection_id -> normalized_name using V2 stores API."""
-    url = "https://www.wixapis.com/stores/v2/collections/query"
+    """Return dict of collection_id -> normalized_name using stores-reader V1 API."""
+    url = "https://www.wixapis.com/stores-reader/v1/collections/query"
     collections = {}
     offset = 0
     while True:
@@ -65,23 +65,31 @@ def get_all_products():
     products = []
     cursor = None
     while True:
-        body = {"query": {"cursorPaging": {"limit": 100}}}
+        body = {"query": {"paging": {"limit": 100, "offset": 0} if not cursor else {}}}
         if cursor:
-            body["query"]["cursorPaging"]["cursor"] = cursor
+            body = {"query": {"cursorPaging": {"limit": 100, "cursor": cursor}}}
+        else:
+            body = {"query": {"paging": {"limit": 100, "offset": len(products)}}}
         r = requests.post(url, headers=HEADERS, json=body)
         r.raise_for_status()
         data = r.json()
-        products.extend(data.get("products", []))
-        cursor = data.get("metadata", {}).get("cursors", {}).get("next")
-        if not cursor:
+        batch = data.get("products", [])
+        products.extend(batch)
+        # Try cursor-based pagination first, fall back to offset
+        metadata = data.get("metadata", {})
+        cursor = metadata.get("cursors", {}).get("next")
+        if not cursor and len(batch) < 100:
             break
+        if not cursor:
+            # offset-based fallback — just fetched a full page, loop will increment offset
+            pass
     print(f"  Fetched {len(products)} products from Wix")
     return products
 
 
 def get_collections_for_products(product_ids):
     """
-    Fetch collection memberships for all products.
+    Fetch collection memberships for all products via stores V1.
     Returns dict of product_id -> [collection_id, ...]
     """
     url = "https://www.wixapis.com/stores/v1/products/collections"
@@ -99,6 +107,18 @@ def get_collections_for_products(product_ids):
                     result[pid].append(cid)
         except Exception as e:
             print(f"  Warning: could not fetch collections for batch: {e}")
+            # Try alternative: get collections per product
+            for pid in batch:
+                try:
+                    r2 = requests.get(
+                        f"https://www.wixapis.com/stores/v1/products/{pid}/collections",
+                        headers=HEADERS
+                    )
+                    if r2.ok:
+                        for c in r2.json().get("collections", []):
+                            result[pid].append(c["id"])
+                except Exception:
+                    pass
     return result
 
 
@@ -166,18 +186,30 @@ def build_rows(product, collection_name):
             additional_images.append(url)
 
     gender, age_group = COLLECTION_GENDER_MAP.get(collection_name, (None, None))
-    google_cat, google_cat_id = get_google_category(collection_name, title)
+    google_cat, _ = get_google_category(collection_name, title)
 
     # Availability & base price
-    inventory = product.get("inventory", {})
-    in_stock = inventory.get("availabilityStatus", "IN_STOCK") == "IN_STOCK"
+    inventory = product.get("stock", product.get("inventory", {}))
+    in_stock = (
+        inventory.get("inStock", True) or
+        inventory.get("availabilityStatus", "IN_STOCK") == "IN_STOCK"
+    )
     availability = "in stock" if in_stock else "out of stock"
 
-    price_range = product.get("actualPriceRange", {})
-    base_price = format_price(
-        price_range.get("minValue", {}).get("amount", "0.00"),
-        price_range.get("minValue", {}).get("currency", "USD")
+    # Price — try multiple field paths used across API versions
+    price_val = (
+        product.get("price", {}).get("price") or
+        product.get("priceData", {}).get("price") or
+        product.get("actualPriceRange", {}).get("minValue", {}).get("amount") or
+        "0.00"
     )
+    currency = (
+        product.get("price", {}).get("currency") or
+        product.get("priceData", {}).get("currency") or
+        product.get("actualPriceRange", {}).get("minValue", {}).get("currency") or
+        "USD"
+    )
+    base_price = format_price(price_val, currency)
 
     variants = product.get("variants", [])
 
@@ -194,10 +226,11 @@ def build_rows(product, collection_name):
 
             v_price = format_price(
                 variant.get("price", {}).get("price", 0),
-                variant.get("price", {}).get("currency", "USD")
+                variant.get("price", {}).get("currency", currency)
             ) or base_price
 
-            v_available = "out of stock" if not variant.get("stock", {}).get("inStock", True) else availability
+            v_stock = variant.get("stock", {})
+            v_available = "out of stock" if not v_stock.get("inStock", True) else availability
 
             item_group = pid if len(variants) > 1 else ""
             row = _make_row(variant_id, title, description, product_url, main_image,
@@ -238,7 +271,9 @@ def main():
 
     print("  Fetching collections...")
     all_collections = get_all_collections()
-    print(f"  Found {len(all_collections)} collections")
+    print(f"  Found {len(all_collections)} collections:")
+    for cid, cname in all_collections.items():
+        print(f"    - '{cname}' ({cid})")
 
     # Map collection_id -> target name
     target_collection_ids = {}
@@ -281,7 +316,7 @@ def main():
     print(f"  Generated {len(all_rows)} rows from {len(products) - skipped} products ({skipped} skipped)")
 
     if not all_rows:
-        print("  WARNING: No rows generated. Check that collection names match exactly.")
+        print("  WARNING: No rows generated. Check that Wix collection names match exactly.")
         return
 
     fieldnames = [
