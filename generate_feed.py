@@ -56,6 +56,7 @@ def get_product_ids_for_category(category_id):
             print(f"  Category items API error {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
         data = r.json()
+        print(f"    Raw response: {json.dumps(data)[:1000]}")
         print(f"    Category API response keys: {list(data.keys())}")
         items = data.get("items", data.get("categoryItems", []))
         for item in items:
