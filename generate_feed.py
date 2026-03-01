@@ -195,6 +195,16 @@ def main():
     products = get_all_products()
     print(f"  Got {len(products)} products")
 
+    # DEBUG: check what get product returns for first product
+    if products:
+        detail = get_product_detail(products[0]["id"])
+        if detail:
+            print(f"  Detail keys: {list(detail.keys())}")
+            print(f"  mainCategoryId: {detail.get('mainCategoryId')}")
+            print(f"  directCategoryIds: {detail.get('directCategoryIds')}")
+            print(f"  categories: {detail.get('categories', 'NOT FOUND')}")
+        import sys; sys.exit(0)  # stop after debug
+        
     if products:
         p = products[0]
         print(f"  Sample product keys: {list(p.keys())}")
