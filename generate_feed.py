@@ -225,4 +225,67 @@ def _make_row(item_id, title, description, link, image_link, additional_images,
               price, availability, gender, age_group, google_product_category,
               color, size, item_group_id):
     return {
-        "id": item_id, "titl
+        "id": item_id, "title": title, "description": description,
+        "link": link, "image_link": image_link,
+        "additional_image_link": ",".join(additional_images[:10]),
+        "availability": availability, "price": price, "brand": BRAND,
+        "condition": "new", "google_product_category": google_product_category,
+        "item_group_id": item_group_id, "color": color, "size": size,
+        "gender": gender or "", "age_group": age_group or "",
+    }
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    print(f"[{datetime.utcnow().isoformat()}] Starting Google Merchant Center feed generation...")
+
+    all_rows = []
+    seen_ids = set()
+
+    for cat_id, (collection_name, gender, age_group) in CATEGORIES.items():
+        print(f"  Fetching products for '{collection_name}'...")
+        try:
+            product_ids = get_product_ids_for_category(cat_id)
+        except Exception as e:
+            print(f"  ERROR fetching category items: {e}")
+            continue
+
+        print(f"    Got {len(product_ids)} product IDs")
+        if not product_ids:
+            continue
+
+        products = get_products_by_ids(product_ids)
+        print(f"    Fetched {len(products)} products")
+
+        for product in products:
+            pid = product["id"]
+            if pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+
+            detail = get_product_detail(pid)
+            rows = build_rows(product, detail, collection_name, gender, age_group)
+            all_rows.extend(rows)
+
+    print(f"  Total: {len(all_rows)} feed rows from {len(seen_ids)} products")
+
+    if not all_rows:
+        print("  WARNING: No rows generated.")
+        return
+
+    fieldnames = ["id", "title", "description", "link", "image_link", "additional_image_link",
+                  "availability", "price", "brand", "condition", "google_product_category",
+                  "item_group_id", "color", "size", "gender", "age_group"]
+
+    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(all_rows)
+
+    print(f"  Written to {OUTPUT_FILE}")
+    print(f"[{datetime.utcnow().isoformat()}] Done.")
+
+
+if __name__ == "__main__":
+    main()
