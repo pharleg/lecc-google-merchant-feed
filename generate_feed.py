@@ -196,7 +196,7 @@ def main():
     print(f"  Got {len(products)} products")
 
     # DEBUG: check what get product returns for first product
-   if products:
+    if products:
         detail = get_product_detail(products[0]["id"])
         if detail:
             print(f"  Detail keys: {list(detail.keys())}")
