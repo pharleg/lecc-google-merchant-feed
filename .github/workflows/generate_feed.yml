@@ -2,8 +2,8 @@ name: Generate Google Merchant Center Feed
 
 on:
   schedule:
-    - cron: "0 */6 * * *"   # Every 6 hours
-  workflow_dispatch:          # Allow manual runs
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
 
 jobs:
   generate-feed:
@@ -27,6 +27,14 @@ jobs:
           WIX_SITE_ID:    ${{ secrets.WIX_SITE_ID }}
           WIX_ACCOUNT_ID: ${{ secrets.WIX_ACCOUNT_ID }}
         run: python generate_feed.py
+
+      - name: Debug - list files
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Files in current dir:"
+          ls -la
+          echo "TSV files anywhere:"
+          find . -name "*.tsv" 2>/dev/null
 
       - name: Commit and push feed
         run: |
