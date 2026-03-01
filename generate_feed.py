@@ -40,14 +40,15 @@ with open("category_map.json") as f:
 # ── Wix API helpers ──────────────────────────────────────────────────────────
 
 def get_all_products():
-    """Fetch all products with category IDs included."""
+    """Fetch all products - same approach as working Meta feed."""
     url = "https://www.wixapis.com/stores/v3/products/query"
     products = []
     offset = 0
     while True:
         body = {
-            "fields": ["DIRECT_CATEGORY_IDS", "DESCRIPTION"],
-            "query": {"paging": {"limit": 100, "offset": offset}}
+            "query": {
+                "paging": {"limit": 100, "offset": offset}
+            }
         }
         r = requests.post(url, headers=HEADERS, json=body)
         if not r.ok:
@@ -62,29 +63,14 @@ def get_all_products():
     return products
 
 
-def get_product_variants(product_id):
-    """Fetch full product details including variants."""
+def get_product_detail(product_id):
+    """Fetch full product detail including variants."""
     url = f"https://www.wixapis.com/stores/v3/products/{product_id}"
     r = requests.get(url, headers=HEADERS)
     if not r.ok:
-        print(f"  Warning: could not fetch variants for {product_id}: {r.status_code}")
-        return []
-    data = r.json()
-    return data.get("product", {}).get("variants", [])
-
-
-def get_product_category_ids(product):
-    """Extract category IDs from a product."""
-    ids = set()
-    # V3 direct category IDs field
-    for cid in product.get("directCategoryIds", []):
-        ids.add(cid)
-    # Also check nested structures
-    for cat in product.get("directCategories", []):
-        cid = cat.get("id") or cat.get("categoryId")
-        if cid:
-            ids.add(cid)
-    return ids
+        print(f"  Warning: could not fetch detail for {product_id}: {r.status_code}")
+        return None
+    return r.json().get("product", {})
 
 
 # ── Category helpers ─────────────────────────────────────────────────────────
@@ -144,7 +130,7 @@ def build_rows(product, collection_name, gender, age_group):
     rows = []
     pid   = product.get("id", "")
     title = product.get("name", "").strip()
-    description = clean_description(product.get("description", "") or product.get("plainDescription", "") or title)
+    description = clean_description(product.get("description", "") or title)
     slug  = product.get("slug", "")
     product_url = f"{STORE_URL}/product-page/{slug}"
 
@@ -159,15 +145,12 @@ def build_rows(product, collection_name, gender, age_group):
             additional_images.append(img_url)
 
     google_cat = get_google_category(collection_name, title)
-
     stock = product.get("stock", {})
     in_stock = stock.get("inStock", True)
     availability = "in stock" if in_stock else "out of stock"
     base_price = get_price(product)
 
-    # Fetch variants separately (not returned by query endpoint)
-    variants = get_product_variants(pid)
-
+    variants = product.get("variants", [])
     if not variants:
         rows.append(_make_row(pid, title, description, product_url, main_image,
                               additional_images, base_price, availability,
@@ -212,17 +195,23 @@ def main():
     products = get_all_products()
     print(f"  Got {len(products)} products")
 
-    # Log first product to see what fields come back
     if products:
         p = products[0]
         print(f"  Sample product keys: {list(p.keys())}")
-        print(f"  Sample directCategoryIds: {p.get('directCategoryIds', 'NOT FOUND')}")
+        print(f"  Sample product name: {p.get('name')}")
 
     all_rows = []
     skipped = 0
 
     for product in products:
-        cat_ids = get_product_category_ids(product)
+        # Check all possible category ID locations in the response
+        cat_ids = set()
+        for cid in product.get("directCategoryIds", []):
+            cat_ids.add(cid)
+        for cat in product.get("directCategories", []):
+            cat_ids.add(cat.get("id", ""))
+        for cat in product.get("categories", []):
+            cat_ids.add(cat.get("id", ""))
 
         collection_name, gender, age_group = None, None, None
         for cid in cat_ids:
@@ -231,13 +220,30 @@ def main():
                 break
 
         if collection_name is None:
+            # Fetch full product detail to get category info
+            detail = get_product_detail(product["id"])
+            if detail:
+                for cid in detail.get("directCategoryIds", []):
+                    cat_ids.add(cid)
+                for cat in detail.get("directCategories", []):
+                    cat_ids.add(cat.get("id", ""))
+                # Also grab variants from detail
+                product["variants"] = detail.get("variants", [])
+
+            for cid in cat_ids:
+                if cid in CATEGORIES:
+                    collection_name, gender, age_group = CATEGORIES[cid]
+                    break
+
+        if collection_name is None:
             skipped += 1
+            print(f"  Skipping '{product.get('name')}' - cat_ids found: {cat_ids}")
             continue
 
         rows = build_rows(product, collection_name, gender, age_group)
         all_rows.extend(rows)
 
-    print(f"  Total: {len(all_rows)} feed rows ({skipped} products skipped - not in target categories)")
+    print(f"  Total: {len(all_rows)} feed rows ({skipped} products skipped)")
 
     if not all_rows:
         print("  WARNING: No rows generated.")
