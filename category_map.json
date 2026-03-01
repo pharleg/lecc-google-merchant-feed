@@ -1,0 +1,48 @@
+{
+  "clothing_category": "Apparel & Accessories > Clothing",
+  "clothing_category_id": "1604",
+  "lake_living_keywords": {
+    "mug": {"category": "Home & Garden > Kitchen & Dining > Tableware > Drinkware > Mugs", "id": "674"},
+    "tumbler": {"category": "Apparel & Accessories > Handbags, Wallets & Cases", "id": "6552"},
+    "cup": {"category": "Home & Garden > Kitchen & Dining > Tableware > Drinkware", "id": "674"},
+    "drinkware": {"category": "Home & Garden > Kitchen & Dining > Tableware > Drinkware", "id": "674"},
+    "water bottle": {"category": "Sporting Goods > Outdoor Recreation > Camping & Hiking > Camping & Hiking Equipment > Hydration Systems", "id": "1539"},
+    "bottle": {"category": "Home & Garden > Kitchen & Dining > Tableware > Drinkware", "id": "674"},
+    "tote": {"category": "Apparel & Accessories > Handbags, Wallets & Cases > Handbags", "id": "3032"},
+    "bag": {"category": "Apparel & Accessories > Handbags, Wallets & Cases", "id": "6552"},
+    "hat": {"category": "Apparel & Accessories > Clothing Accessories > Hats", "id": "178"},
+    "cap": {"category": "Apparel & Accessories > Clothing Accessories > Hats", "id": "178"},
+    "beanie": {"category": "Apparel & Accessories > Clothing Accessories > Hats", "id": "178"},
+    "sticker": {"category": "Arts & Entertainment > Hobbies & Creative Arts > Crafts", "id": "13"},
+    "poster": {"category": "Arts & Entertainment > Party & Celebration > Gift Giving > Greeting & Note Cards", "id": "96"},
+    "print": {"category": "Arts & Entertainment > Hobbies & Creative Arts > Arts & Crafts", "id": "13"},
+    "candle": {"category": "Home & Garden > Decor > Candles & Candle Holders > Candles", "id": "600"},
+    "towel": {"category": "Home & Garden > Linens & Bedding > Towels", "id": "569"},
+    "blanket": {"category": "Home & Garden > Linens & Bedding > Blankets & Throws", "id": "567"},
+    "keychain": {"category": "Apparel & Accessories > Jewelry > Charms & Pendants", "id": "191"},
+    "magnet": {"category": "Home & Garden > Decor", "id": "588"},
+    "ornament": {"category": "Home & Garden > Decor > Seasonal & Holiday Decorations", "id": "596"}
+  },
+  "default_lake_living": {
+    "category": "Home & Garden > Decor",
+    "id": "588"
+  },
+  "clothing_subcategory_keywords": {
+    "t-shirt": "Apparel & Accessories > Clothing > Shirts & Tops",
+    "tshirt": "Apparel & Accessories > Clothing > Shirts & Tops",
+    "tee": "Apparel & Accessories > Clothing > Shirts & Tops",
+    "hoodie": "Apparel & Accessories > Clothing > Outerwear > Hoodies & Sweatshirts",
+    "sweatshirt": "Apparel & Accessories > Clothing > Outerwear > Hoodies & Sweatshirts",
+    "crewneck": "Apparel & Accessories > Clothing > Outerwear > Hoodies & Sweatshirts",
+    "tank": "Apparel & Accessories > Clothing > Shirts & Tops",
+    "polo": "Apparel & Accessories > Clothing > Shirts & Tops",
+    "long sleeve": "Apparel & Accessories > Clothing > Shirts & Tops",
+    "jacket": "Apparel & Accessories > Clothing > Outerwear > Coats & Jackets",
+    "vest": "Apparel & Accessories > Clothing > Outerwear",
+    "shorts": "Apparel & Accessories > Clothing > Shorts",
+    "pants": "Apparel & Accessories > Clothing > Pants",
+    "leggings": "Apparel & Accessories > Clothing > Pants > Leggings",
+    "dress": "Apparel & Accessories > Clothing > Dresses",
+    "skirt": "Apparel & Accessories > Clothing > Skirts"
+  }
+}
