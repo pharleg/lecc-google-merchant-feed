@@ -8,16 +8,17 @@ import csv
 import json
 import requests
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ── Config ──────────────────────────────────────────────────────────────────
-API_KEY     = os.environ["WIX_API_KEY"]
-SITE_ID     = os.environ["WIX_SITE_ID"]
-ACCOUNT_ID  = os.environ["WIX_ACCOUNT_ID"]
+
+API_KEY    = os.environ["WIX_API_KEY"]
+SITE_ID    = os.environ["WIX_SITE_ID"]
+ACCOUNT_ID = os.environ["WIX_ACCOUNT_ID"]
+
 STORE_URL   = "https://www.lakeerieclothing.com"
 BRAND       = "Lake Erie Clothing Company"
 OUTPUT_FILE = "google_feed.tsv"
-EXPIRATION_DATE = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d")
 
 HEADERS = {
     "Authorization":  API_KEY,
@@ -27,16 +28,17 @@ HEADERS = {
 }
 
 # ── Hardcoded category IDs (from Wix dashboard URLs) ────────────────────────
+
 CATEGORIES = {
-    "b377b9de-cce7-41e2-bb5d-c6267b77ac77": ("womens clothing", "female", "adult"),
-    "5e5794a2-f163-4aef-8735-12adcf30f43d": ("unisex clothing", "unisex", "adult"),
-    "826bd629-379e-46b0-b579-03d70c511ba0": ("lake living",     None,     None),
+    "b377b9de-cce7-41e2-bb5d-c6267b77ac77": ("womens clothing",  "female", "adult"),
+    "5e5794a2-f163-4aef-8735-12adcf30f43d": ("unisex clothing",  "unisex", "adult"),
+    "826bd629-379e-46b0-b579-03d70c511ba0": ("lake living",      None,     None),
 }
 
 # ── Load category map ────────────────────────────────────────────────────────
+
 with open("category_map.json") as f:
     CAT_MAP = json.load(f)
-
 
 # ── Wix API helpers ──────────────────────────────────────────────────────────
 
@@ -45,6 +47,7 @@ def get_product_ids_for_category(category_id):
     url = f"https://www.wixapis.com/categories/v1/categories/{category_id}/list-items"
     product_ids = []
     cursor = None
+
     while True:
         body = {
             "treeReference": {"appNamespace": "@wix/stores"},
@@ -52,30 +55,35 @@ def get_product_ids_for_category(category_id):
         }
         if cursor:
             body["paging"]["cursor"] = cursor
+
         r = requests.post(url, headers=HEADERS, json=body)
         if not r.ok:
             print(f"  Category items API error {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
-        data = r.json()
+
+        data  = r.json()
         items = data.get("items", [])
         for item in items:
             pid = item.get("catalogItemId") or item.get("itemId") or item.get("id")
             if pid:
                 product_ids.append(pid)
+
         next_cursor = data.get("pagingMetadata", {}).get("cursors", {}).get("next")
         if not next_cursor or len(items) < 100:
             break
         cursor = next_cursor
+
     return product_ids
 
 
 def get_products_by_ids(product_ids):
     """Fetch products by ID list using V3 query."""
-    url = "https://www.wixapis.com/stores/v3/products/query"
+    url      = "https://www.wixapis.com/stores/v3/products/query"
     products = []
+
     for i in range(0, len(product_ids), 100):
-        batch = product_ids[i:i+100]
-        body = {
+        batch = product_ids[i:i + 100]
+        body  = {
             "query": {
                 "filter": {"id": {"$in": batch}},
                 "paging": {"limit": 100}
@@ -86,35 +94,37 @@ def get_products_by_ids(product_ids):
             print(f"  Products API error {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
         products.extend(r.json().get("products", []))
+
     return products
 
 
 def get_product_detail(product_id):
     """Fetch full product detail including variantsInfo."""
     url = f"https://www.wixapis.com/stores/v3/products/{product_id}"
-    r = requests.get(url, headers=HEADERS)
+    r   = requests.get(url, headers=HEADERS)
     if not r.ok:
         print(f"  Warning: could not fetch detail for {product_id}: {r.status_code}")
         return None
     return r.json().get("product", {})
 
-
 # ── Category helpers ─────────────────────────────────────────────────────────
 
 def get_google_category(collection_name, product_name):
     title_lower = product_name.lower()
+
     if collection_name in ("womens clothing", "unisex clothing"):
         for kw, subcat in CAT_MAP["clothing_subcategory_keywords"].items():
             if kw in title_lower:
                 return subcat
         return CAT_MAP["clothing_category"]
+
     if collection_name == "lake living":
         for kw, info in CAT_MAP["lake_living_keywords"].items():
             if kw in title_lower:
                 return info["category"]
         return CAT_MAP["default_lake_living"]["category"]
-    return CAT_MAP["clothing_category"]
 
+    return CAT_MAP["clothing_category"]
 
 # ── Feed row builder ──────────────────────────────────────────────────────────
 
@@ -143,8 +153,8 @@ def format_price(amount, currency="USD"):
 def get_price(product):
     for path in [
         lambda p: (p["actualPriceRange"]["minValue"]["amount"], "USD"),
-        lambda p: (p["priceData"]["price"], p["priceData"].get("currency", "USD")),
-        lambda p: (p["price"]["price"], p["price"].get("currency", "USD")),
+        lambda p: (p["priceData"]["price"],  p["priceData"].get("currency", "USD")),
+        lambda p: (p["price"]["price"],       p["price"].get("currency", "USD")),
     ]:
         try:
             amount, currency = path(product)
@@ -157,13 +167,14 @@ def get_price(product):
 
 def build_rows(product, detail, collection_name, gender, age_group):
     rows = []
-    pid   = product.get("id", "")
-    title = product.get("name", "").strip()
+    pid  = product.get("id", "")
+
+    title       = product.get("name", "").strip()
     description = clean_description(product.get("description", "") or title)
-    slug  = product.get("slug", "")
+    slug        = product.get("slug", "")
     product_url = f"{STORE_URL}/product-page/{slug}"
 
-    main_image = ""
+    main_image        = ""
     additional_images = []
     media = product.get("media", {})
     if media.get("main", {}).get("image"):
@@ -174,28 +185,31 @@ def build_rows(product, detail, collection_name, gender, age_group):
             additional_images.append(img_url)
 
     google_cat = get_google_category(collection_name, title)
-    inv = product.get("inventory", {})
-    in_stock = inv.get("availabilityStatus", "IN_STOCK") == "IN_STOCK"
-    availability = "in stock" if in_stock else "out of stock"
     base_price = get_price(product)
 
-    options = detail.get("options", []) if detail else []
+    # Always in stock — made-to-order / print-on-demand model
+    availability = "in stock"
+
+    options  = detail.get("options", []) if detail else []
     variants = []
     if detail:
         variants = detail.get("variantsInfo", {}).get("variants", [])
 
     if not variants:
-        rows.append(_make_row(pid, title, description, product_url, main_image,
-                              additional_images, base_price, availability,
-                              gender, age_group, google_cat, "", "", ""))
+        rows.append(_make_row(
+            pid, title, description, product_url, main_image,
+            additional_images, base_price, availability,
+            gender, age_group, google_cat, "", "", ""
+        ))
     else:
-        for i, variant in enumerate(variants):
+        for variant in variants:
             color, size = "", ""
+
             for choice_ref in variant.get("choices", []):
-                ids = choice_ref.get("optionChoiceIds", {})
-                opt_id    = ids.get("optionId", "")
+                ids      = choice_ref.get("optionChoiceIds", {})
+                opt_id   = ids.get("optionId", "")
                 choice_id = ids.get("choiceId", "")
-                name = get_choice_name(options, opt_id, choice_id)
+                name     = get_choice_name(options, opt_id, choice_id)
                 for option in options:
                     if option.get("id") == opt_id:
                         opt_name = option.get("name", "").lower()
@@ -203,17 +217,23 @@ def build_rows(product, detail, collection_name, gender, age_group):
                             color = name
                         elif "size" in opt_name:
                             size = name
-            variant_id = f"{pid}_{i}"
+
+            # Use stable Wix variant ID — not loop index
+            variant_id = variant.get("id") or variant.get("variantId") or f"{pid}_{color}_{size}".strip("_")
+
             v_price = format_price(
                 variant.get("price", {}).get("actualPrice", {}).get("amount", 0)
             ) or base_price
-            v_in_stock = variant.get("inventoryStatus", {}).get("inStock", True)
-            v_available = "in stock" if v_in_stock else "out of stock"
+
             item_group = pid if len(variants) > 1 else ""
-            v_image = variant.get("media", {}).get("image", {}).get("url", "") or main_image
-            rows.append(_make_row(variant_id, title, description, product_url, v_image,
-                                  additional_images, v_price, v_available,
-                                  gender, age_group, google_cat, color, size, item_group))
+            v_image    = variant.get("media", {}).get("image", {}).get("url", "") or main_image
+
+            rows.append(_make_row(
+                variant_id, title, description, product_url, v_image,
+                additional_images, v_price, availability,
+                gender, age_group, google_cat, color, size, item_group
+            ))
+
     return rows
 
 
@@ -221,16 +241,23 @@ def _make_row(item_id, title, description, link, image_link, additional_images,
               price, availability, gender, age_group, google_product_category,
               color, size, item_group_id):
     return {
-        "id": item_id, "title": title, "description": description,
-        "link": link, "image_link": image_link,
-        "additional_image_link": ",".join(additional_images[:10]),
-        "availability": availability, "price": price, "brand": BRAND,
-        "condition": "new", "google_product_category": google_product_category,
-        "item_group_id": item_group_id, "color": color, "size": size,
-        "gender": gender or "", "age_group": age_group or "",
-        "expiration_date": EXPIRATION_DATE,
+        "id":                      item_id,
+        "title":                   title,
+        "description":             description,
+        "link":                    link,
+        "image_link":              image_link,
+        "additional_image_link":   ",".join(additional_images[:10]),
+        "availability":            availability,
+        "price":                   price,
+        "brand":                   BRAND,
+        "condition":               "new",
+        "google_product_category": google_product_category,
+        "item_group_id":           item_group_id,
+        "color":                   color,
+        "size":                    size,
+        "gender":                  gender or "",
+        "age_group":               age_group or "",
     }
-
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -242,18 +269,19 @@ def main():
 
     for cat_id, (collection_name, gender, age_group) in CATEGORIES.items():
         print(f"  Fetching products for '{collection_name}'...")
+
         try:
             product_ids = get_product_ids_for_category(cat_id)
         except Exception as e:
             print(f"  ERROR fetching category items: {e}")
             continue
 
-        print(f"    Got {len(product_ids)} product IDs")
+        print(f"  Got {len(product_ids)} product IDs")
         if not product_ids:
             continue
 
         products = get_products_by_ids(product_ids)
-        print(f"    Fetched {len(products)} products")
+        print(f"  Fetched {len(products)} products")
 
         for product in products:
             pid = product["id"]
@@ -262,7 +290,7 @@ def main():
             seen_ids.add(pid)
 
             detail = get_product_detail(pid)
-            rows = build_rows(product, detail, collection_name, gender, age_group)
+            rows   = build_rows(product, detail, collection_name, gender, age_group)
             all_rows.extend(rows)
 
     print(f"  Total: {len(all_rows)} feed rows from {len(seen_ids)} products")
@@ -271,9 +299,11 @@ def main():
         print("  WARNING: No rows generated.")
         return
 
-    fieldnames = ["id", "title", "description", "link", "image_link", "additional_image_link",
-                  "availability", "price", "brand", "condition", "google_product_category",
-                  "item_group_id", "color", "size", "gender", "age_group", "expiration_date"]
+    fieldnames = [
+        "id", "title", "description", "link", "image_link", "additional_image_link",
+        "availability", "price", "brand", "condition", "google_product_category",
+        "item_group_id", "color", "size", "gender", "age_group",
+    ]
 
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t", extrasaction="ignore")
