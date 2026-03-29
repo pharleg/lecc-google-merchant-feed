@@ -35,6 +35,9 @@ CATEGORIES = {
     "826bd629-379e-46b0-b579-03d70c511ba0": ("lake living",      None,     None),
 }
 
+# Youth size indicators — triggers age_group = "kids"
+YOUTH_SIZE_PREFIXES = ("ys", "ym", "yl", "yxs", "yxl", "youth")
+
 # ── Load category map ────────────────────────────────────────────────────────
 
 with open("category_map.json") as f:
@@ -113,18 +116,38 @@ def get_google_category(collection_name, product_name):
     title_lower = product_name.lower()
 
     if collection_name in ("womens clothing", "unisex clothing"):
-        for kw, subcat in CAT_MAP["clothing_subcategory_keywords"].items():
+        # Sort longest keyword first to avoid partial matches (e.g. "crop hoodie" before "hoodie")
+        sorted_keywords = sorted(
+            CAT_MAP["clothing_subcategory_keywords"].items(),
+            key=lambda x: len(x[0]),
+            reverse=True
+        )
+        for kw, subcat in sorted_keywords:
             if kw in title_lower:
                 return subcat
         return CAT_MAP["clothing_category"]
 
     if collection_name == "lake living":
-        for kw, info in CAT_MAP["lake_living_keywords"].items():
+        # Sort longest keyword first (e.g. "can cooler" before "cooler")
+        sorted_keywords = sorted(
+            CAT_MAP["lake_living_keywords"].items(),
+            key=lambda x: len(x[0]),
+            reverse=True
+        )
+        for kw, info in sorted_keywords:
             if kw in title_lower:
                 return info["category"]
         return CAT_MAP["default_lake_living"]["category"]
 
     return CAT_MAP["clothing_category"]
+
+# ── Age group helper ─────────────────────────────────────────────────────────
+
+def get_age_group(size, default_age_group):
+    """Return 'kids' for youth sizes, otherwise pass through the category default."""
+    if size and size.lower().strip() in YOUTH_SIZE_PREFIXES:
+        return "kids"
+    return default_age_group or "adult"
 
 # ── Feed row builder ──────────────────────────────────────────────────────────
 
@@ -187,7 +210,7 @@ def build_rows(product, detail, collection_name, gender, age_group):
     google_cat = get_google_category(collection_name, title)
     base_price = get_price(product)
 
-    # Always in stock — made-to-order / print-on-demand model
+    # Always in stock — made-to-order model
     availability = "in stock"
 
     options  = detail.get("options", []) if detail else []
@@ -206,10 +229,10 @@ def build_rows(product, detail, collection_name, gender, age_group):
             color, size = "", ""
 
             for choice_ref in variant.get("choices", []):
-                ids      = choice_ref.get("optionChoiceIds", {})
-                opt_id   = ids.get("optionId", "")
+                ids       = choice_ref.get("optionChoiceIds", {})
+                opt_id    = ids.get("optionId", "")
                 choice_id = ids.get("choiceId", "")
-                name     = get_choice_name(options, opt_id, choice_id)
+                name      = get_choice_name(options, opt_id, choice_id)
                 for option in options:
                     if option.get("id") == opt_id:
                         opt_name = option.get("name", "").lower()
@@ -217,6 +240,13 @@ def build_rows(product, detail, collection_name, gender, age_group):
                             color = name
                         elif "size" in opt_name:
                             size = name
+
+            # Single-colorway products have size but no color — give Google something
+            if size and not color:
+                color = "See product page"
+
+            # Detect youth sizes and override age_group accordingly
+            resolved_age_group = get_age_group(size, age_group)
 
             # Use stable Wix variant ID — not loop index
             variant_id = variant.get("id") or variant.get("variantId") or f"{pid}_{color}_{size}".strip("_")
@@ -231,7 +261,7 @@ def build_rows(product, detail, collection_name, gender, age_group):
             rows.append(_make_row(
                 variant_id, title, description, product_url, v_image,
                 additional_images, v_price, availability,
-                gender, age_group, google_cat, color, size, item_group
+                gender, resolved_age_group, google_cat, color, size, item_group
             ))
 
     return rows
