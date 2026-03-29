@@ -222,7 +222,7 @@ def build_rows(product, detail, collection_name, gender, age_group):
         rows.append(_make_row(
             pid, title, description, product_url, main_image,
             additional_images, base_price, availability,
-            gender, age_group, google_cat, "", "", ""
+            gender, age_group or "", google_cat, "", "", ""
         ))
     else:
         for variant in variants:
