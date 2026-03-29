@@ -147,7 +147,7 @@ def get_age_group(size, default_age_group):
     """Return 'kids' for youth sizes, otherwise pass through the category default."""
     if size and size.lower().strip() in YOUTH_SIZE_PREFIXES:
         return "kids"
-    return default_age_group or "adult"
+    return default_age_group or ""
 
 # ── Feed row builder ──────────────────────────────────────────────────────────
 
